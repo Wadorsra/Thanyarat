@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ระบบตรวจจับความเร็วรถและหมวกกันน็อค</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #141a22;
+      --panel-2: #1b232d;
+      --line: #2b3542;
+      --text: #eef3f6;
+      --muted: #9aa7b3;
+      --faint: #65717d;
+      --blue: #38bdf8;
+      --green: #3ddc97;
+      --yellow: #facc15;
+      --red: #ff5a4f;
+      --ink: #071016;
+      --radius: 8px;
+      --font: "IBM Plex Sans Thai", system-ui, sans-serif;
+      --mono: "IBM Plex Mono", monospace;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      min-height: 100vh;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px 22px;
+      border-bottom: 1px solid var(--line);
+      background: #10161d;
+      flex-wrap: wrap;
+    }
+
+    h1 { font-size: 20px; margin: 0; }
+    .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+    .status {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--muted);
+      padding: 8px 12px;
+      border-radius: 999px;
+      font: 12px var(--mono);
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+    .status.live .dot { background: var(--green); box-shadow: 0 0 10px var(--green); }
+    .status.alert .dot { background: var(--red); box-shadow: 0 0 10px var(--red); }
+
+    main {
+      width: min(1280px, 100%);
+      margin: 0 auto;
+      padding: 18px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.55fr) 390px;
+      gap: 16px;
+      align-items: start;
+    }
+
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; }
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 14px;
+    }
+
+    .card h2 {
+      font-size: 15px;
+      margin: 0 0 12px;
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .stage {
+      position: relative;
+      aspect-ratio: 16 / 9;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: #030609;
+    }
+
+    video, canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .empty {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: var(--faint);
+      text-align: center;
+      padding: 20px;
+    }
+
+    .toolbar, .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .toolbar { margin-top: 12px; }
+
+    button, label.file-btn {
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      color: var(--text);
+      border-radius: 7px;
+      padding: 9px 12px;
+      font: 600 13px var(--font);
+      cursor: pointer;
+    }
+
+    button:hover, label.file-btn:hover { border-color: #435163; }
+    button.primary { background: var(--blue); border-color: var(--blue); color: var(--ink); }
+    button.danger { background: rgba(255,90,79,.13); border-color: rgba(255,90,79,.55); color: #ffc9c5; }
+    input[type=file] { display: none; }
+
+    .meters {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    @media (max-width: 720px) {
+      .meters { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    .meter {
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 12px;
+      min-height: 78px;
+    }
+
+    .meter .value {
+      font: 700 28px var(--mono);
+      line-height: 1;
+    }
+
+    .meter .label {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .danger-text { color: var(--red); }
+    .warn-text { color: var(--yellow); }
+    .ok-text { color: var(--green); }
+
+    .stack { display: grid; gap: 14px; }
+    .field { margin-bottom: 13px; }
+    .field:last-child { margin-bottom: 0; }
+    .field label {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 6px;
+    }
+    .field output { color: var(--yellow); font-family: var(--mono); }
+    .field input[type=range] { width: 100%; accent-color: var(--yellow); }
+    .field input[type=text], .field select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 9px 10px;
+      font: 13px var(--font);
+    }
+
+    .seg {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      overflow: hidden;
+    }
+    .seg button { border: 0; border-radius: 0; }
+    .seg button.on { background: var(--yellow); color: var(--ink); }
+
+    .log {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 7px;
+      max-height: 260px;
+      overflow: auto;
+    }
+
+    .log li {
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      border-radius: 7px;
+      padding: 9px 10px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      font: 12px var(--mono);
+      color: var(--muted);
+    }
+
+    .note {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+      margin: 10px 0 0;
+    }
+
+    .formula {
+      background: #0e1319;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 10px;
+      color: #cad6df;
+      font: 12px/1.6 var(--mono);
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>ระบบตรวจจับความเร็วรถและหมวกกันน็อค</h1>
+      <div class="sub">HTML + JavaScript + TensorFlow.js สำหรับต้นแบบและปรับค่าฟิสิกส์จากภาพจริง</div>
+    </div>
+    <div class="status" id="status"><span class="dot"></span><span id="statusText">พร้อมใช้งาน</span></div>
+  </header>
+
+  <main>
+    <section class="stack">
+      <div class="card">
+        <h2>
+          <span>ภาพตรวจจับ</span>
+          <span class="sub" id="modelState">ยังไม่โหลดโมเดล</span>
+        </h2>
+        <div class="stage" id="stage">
+          <video id="video" muted playsinline></video>
+          <canvas id="overlay"></canvas>
+          <div class="empty" id="empty">กดเปิดกล้องหรือเลือกไฟล์วิดีโอเพื่อเริ่มตรวจจับ</div>
+        </div>
+        <div class="toolbar">
+          <button class="primary" id="cameraBtn">เปิดกล้อง</button>
+          <label class="file-btn" for="videoFile">เลือกวิดีโอ</label>
+          <input id="videoFile" type="file" accept="video/*">
+          <button id="calibrateBtn">วาดเส้นคาลิเบรต 2 จุด</button>
+          <button id="resetTracksBtn">ล้างการติดตาม</button>
+        </div>
+        <p class="note" id="hint">เส้นคาลิเบรตใช้บอกว่าระยะจริงกี่เมตรต่อความยาวบนภาพ จากนั้นระบบจะคำนวณ v = s / t และแปลงเป็น km/h</p>
+      </div>
+
+      <div class="meters">
+        <div class="meter"><div class="value" id="speedNow">0</div><div class="label">ความเร็วสูงสุดขณะนี้ km/h</div></div>
+        <div class="meter"><div class="value" id="vehicleCount">0</div><div class="label">จำนวนรถที่พบ</div></div>
+        <div class="meter"><div class="value" id="helmetCount">0</div><div class="label">มอเตอร์ไซค์ใส่หมวก</div></div>
+        <div class="meter"><div class="value" id="alertCount">0</div><div class="label">เหตุการณ์เตือน</div></div>
+      </div>
+
+      <div class="card">
+        <h2>บันทึกเหตุการณ์ <button id="exportBtn">Export CSV</button></h2>
+        <ul class="log" id="log">
+          <li><span>ยังไม่มีเหตุการณ์</span><span>-</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <aside class="stack">
+      <div class="card">
+        <h2>ตั้งค่าการตรวจจับ</h2>
+        <div class="field">
+          <label>Confidence ขั้นต่ำ <output id="confOut">0.50</output></label>
+          <input id="confidence" type="range" min="0.2" max="0.9" value="0.5" step="0.05">
+        </div>
+        <div class="field">
+          <label>จำกัดความเร็ว <output id="limitOut">60 km/h</output></label>
+          <input id="speedLimit" type="range" min="20" max="140" value="60" step="5">
+        </div>
+        <div class="field">
+          <label>โหมดหมวกกันน็อค</label>
+          <div class="seg" id="helmetMode">
+            <button class="on" data-mode="estimate">ประเมิน</button>
+            <button data-mode="custom">โมเดล TFJS</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>Helmet model.json</label>
+          <input id="helmetModelUrl" type="text" placeholder="models/helmet/model.json">
+        </div>
+        <p class="note">โหมดประเมินใช้การพบคนซ้อนทับกับมอเตอร์ไซค์และตรวจตำแหน่งศีรษะเบื้องต้น เหมาะกับต้นแบบ หากต้องการแม่นขึ้นให้ฝึกโมเดลหมวกแล้วใส่ URL แบบ TFJS</p>
+      </div>
+
+      <div class="card">
+        <h2>ฟิสิกส์และคาลิเบรต</h2>
+        <div class="field">
+          <label>ระยะจริงของเส้นคาลิเบรต <output id="calibOut">5.0 m</output></label>
+          <input id="calibMeters" type="range" min="1" max="30" value="5" step="0.5">
+        </div>
+        <div class="field">
+          <label>เมตรต่อพิกเซล <output id="mppOut">0.050</output></label>
+          <input id="meterPerPixel" type="range" min="0.005" max="0.2" value="0.05" step="0.005">
+        </div>
+        <div class="field">
+          <label>มุมถนนเทียบกล้อง <output id="angleOut">0°</output></label>
+          <input id="roadAngle" type="range" min="-45" max="45" value="0" step="1">
+        </div>
+        <div class="field">
+          <label>ค่าสัมประสิทธิ์แรงเสียดทาน μ <output id="frictionOut">0.70</output></label>
+          <input id="friction" type="range" min="0.2" max="1.0" value="0.7" step="0.05">
+        </div>
+        <div class="field">
+          <label>เวลาตอบสนอง / Reaction <output id="reactionOut">1.0 s</output></label>
+          <input id="reactionTime" type="range" min="0.2" max="3" value="1" step="0.1">
+        </div>
+        <div class="formula" id="physicsBox"></div>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    const VEHICLES = new Set(["car", "truck", "bus", "motorcycle"]);
+    const $ = (id) => document.getElementById(id);
+    const video = $("video");
+    const canvas = $("overlay");
+    const ctx = canvas.getContext("2d");
+    const stage = $("stage");
+    const state = {
+      model: null,
+      helmetModel: null,
+      running: false,
+      stream: null,
+      tracks: new Map(),
+      nextId: 1,
+      logs: [],
+      calibrating: false,
+      calibPoints: [],
+      helmetMode: "estimate",
+      lastTs: performance.now(),
+      maxSpeed: 0
+    };
+    const cfg = {
+      confidence: 0.5,
+      speedLimit: 60,
+      calibMeters: 5,
+      meterPerPixel: 0.05,
+      roadAngle: 0,
+      friction: 0.7,
+      reactionTime: 1
+    };
+
+    function setStatus(text, mode = "") {
+      $("statusText").textContent = text;
+      $("status").className = "status " + mode;
+    }
+
+    function resizeCanvas() {
+      const rect = stage.getBoundingClientRect();
+      canvas.width = Math.round(rect.width * devicePixelRatio);
+      canvas.height = Math.round(rect.height * devicePixelRatio);
+      ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+    }
+
+    async function loadModel() {
+      if (state.model) return state.model;
+      $("modelState").textContent = "กำลังโหลด COCO-SSD...";
+      state.model = await cocoSsd.load();
+      $("modelState").textContent = "COCO-SSD พร้อมใช้งาน";
+      return state.model;
+    }
+
+    async function loadHelmetModel() {
+      const url = $("helmetModelUrl").value.trim();
+      if (!url) return null;
+      $("modelState").textContent = "กำลังโหลดโมเดลหมวก...";
+      state.helmetModel = await tf.loadGraphModel(url);
+      $("modelState").textContent = "โหลดโมเดลหมวกแล้ว";
+      return state.helmetModel;
+    }
+
+    async function startCamera() {
+      if (state.running && state.stream) {
+        stopVideo();
+        return;
+      }
+      try {
+        await loadModel();
+        state.stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio: false });
+        video.srcObject = state.stream;
+        video.loop = false;
+        await video.play();
+        beginLoop();
+        $("cameraBtn").textContent = "ปิดกล้อง";
+        $("cameraBtn").classList.add("danger");
+      } catch (err) {
+        setStatus("เปิดกล้องไม่ได้", "alert");
+        alert("ไม่สามารถเปิดกล้องได้: " + err.message);
+      }
+    }
+
+    function stopVideo() {
+      state.running = false;
+      if (state.stream) state.stream.getTracks().forEach((t) => t.stop());
+      state.stream = null;
+      video.pause();
+      video.srcObject = null;
+      $("empty").style.display = "grid";
+      $("cameraBtn").textContent = "เปิดกล้อง";
+      $("cameraBtn").classList.remove("danger");
+      setStatus("หยุดทำงาน");
+    }
+
+    async function useVideoFile(file) {
+      if (!file) return;
+      await loadModel();
+      stopVideo();
+      video.src = URL.createObjectURL(file);
+      video.loop = true;
+      await video.play();
+      beginLoop();
+    }
+
+    function beginLoop() {
+      resizeCanvas();
+      $("empty").style.display = "none";
+      state.running = true;
+      state.tracks.clear();
+      state.maxSpeed = 0;
+      state.lastTs = performance.now();
+      setStatus("กำลังตรวจจับ", "live");
+      requestAnimationFrame(loop);
+    }
+
+    function centerOf(box) {
+      return { x: box[0] + box[2] / 2, y: box[1] + box[3] / 2 };
+    }
+
+    function correctedDistance(pxDistance) {
+      const angle = Math.cos((cfg.roadAngle * Math.PI) / 180);
+      return (pxDistance * cfg.meterPerPixel) / Math.max(0.25, Math.abs(angle));
+    }
+
+    function matchTrack(det, dt) {
+      const c = centerOf(det.bbox);
+      let best = null;
+      let bestDist = Infinity;
+      for (const track of state.tracks.values()) {
+        if (track.class !== det.class) continue;
+        const d = Math.hypot(c.x - track.center.x, c.y - track.center.y);
+        if (d < bestDist && d < 90) {
+          best = track;
+          bestDist = d;
+        }
+      }
+      if (!best) {
+        best = { id: state.nextId++, class: det.class, center: c, speed: 0, lastSeen: performance.now(), warnedSpeed: false, warnedHelmet: false };
+        state.tracks.set(best.id, best);
+      } else if (dt > 0) {
+        const meters = correctedDistance(bestDist);
+        const speed = (meters / dt) * 3.6;
+        best.speed = best.speed * 0.65 + speed * 0.35;
+        best.center = c;
+        best.lastSeen = performance.now();
+      }
+      return best;
+    }
+
+    function overlap(a, b) {
+      const x1 = Math.max(a[0], b[0]);
+      const y1 = Math.max(a[1], b[1]);
+      const x2 = Math.min(a[0] + a[2], b[0] + b[2]);
+      const y2 = Math.min(a[1] + a[3], b[1] + b[3]);
+      return Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+    }
+
+    function estimateHelmet(motorcycle, people) {
+      const rider = people.find((p) => overlap(motorcycle.bbox, p.bbox) > motorcycle.bbox[2] * motorcycle.bbox[3] * 0.04);
+      if (!rider) return { label: "ไม่พบผู้ขับขี่", ok: false, confidence: 0.35 };
+      const headY = rider.bbox[1] + rider.bbox[3] * 0.16;
+      const headNearTop = headY < motorcycle.bbox[1] + motorcycle.bbox[3] * 0.45;
+      return headNearTop
+        ? { label: "คาดว่าใส่หมวก", ok: true, confidence: 0.58 }
+        : { label: "ไม่สวมหมวก", ok: false, confidence: 0.55 };
+    }
+
+    async function detectHelmetsWithCustomModel() {
+      if (!state.helmetModel) {
+        try { await loadHelmetModel(); } catch (err) { console.warn(err); }
+      }
+      return [];
+    }
+
+    function brakingDistance(speedKmh) {
+      const v = speedKmh / 3.6;
+      const reaction = v * cfg.reactionTime;
+      const brake = (v * v) / (2 * cfg.friction * 9.81);
+      return { reaction, brake, total: reaction + brake };
+    }
+
+    function addLog(type, text, level = "warn") {
+      const time = new Date().toLocaleTimeString("th-TH", { hour12: false });
+      state.logs.unshift({ time, type, text, level });
+      state.logs = state.logs.slice(0, 40);
+      $("alertCount").textContent = state.logs.length;
+      renderLog();
+    }
+
+    function renderLog() {
+      $("log").innerHTML = state.logs.length
+        ? state.logs.map((l) => `<li><span class="${l.level === "danger" ? "danger-text" : "warn-text"}">${l.type}: ${l.text}</span><span>${l.time}</span></li>`).join("")
+        : `<li><span>ยังไม่มีเหตุการณ์</span><span>-</span></li>`;
+    }
+
+    function drawBox(det, track, helmet) {
+      const [x, y, w, h] = det.bbox;
+      const over = track.speed >= cfg.speedLimit;
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = over ? "#ff5a4f" : det.class === "motorcycle" ? "#facc15" : "#38bdf8";
+      ctx.strokeRect(x, y, w, h);
+      const helmetText = helmet ? ` | ${helmet.label}` : "";
+      const label = `#${track.id} ${det.class} ${Math.round(track.speed)} km/h${helmetText}`;
+      ctx.font = "12px IBM Plex Mono, monospace";
+      const tw = ctx.measureText(label).width + 12;
+      ctx.fillStyle = over || (helmet && !helmet.ok) ? "rgba(255,90,79,.92)" : "rgba(56,189,248,.92)";
+      ctx.fillRect(x, Math.max(0, y - 22), Math.min(tw, stage.clientWidth - x), 22);
+      ctx.fillStyle = "#071016";
+      ctx.fillText(label, x + 6, Math.max(14, y - 7));
+    }
+
+    function drawCalibration() {
+      if (state.calibPoints.length === 0) return;
+      ctx.strokeStyle = "#3ddc97";
+      ctx.fillStyle = "#3ddc97";
+      ctx.lineWidth = 2;
+      state.calibPoints.forEach((p) => {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      if (state.calibPoints.length === 2) {
+        const [a, b] = state.calibPoints;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+    }
+
+    async function loop(ts) {
+      if (!state.running) return;
+      const dt = Math.max(0.001, (ts - state.lastTs) / 1000);
+      state.lastTs = ts;
+      ctx.clearRect(0, 0, stage.clientWidth, stage.clientHeight);
+      drawCalibration();
+
+      if (video.readyState >= 2 && state.model) {
+        const sx = stage.clientWidth / video.videoWidth;
+        const sy = stage.clientHeight / video.videoHeight;
+        const predictions = await state.model.detect(video);
+        const people = predictions.filter((p) => p.class === "person" && p.score >= cfg.confidence)
+          .map((p) => ({ ...p, bbox: [p.bbox[0] * sx, p.bbox[1] * sy, p.bbox[2] * sx, p.bbox[3] * sy] }));
+        const vehicles = predictions.filter((p) => VEHICLES.has(p.class) && p.score >= cfg.confidence)
+          .map((p) => ({ ...p, bbox: [p.bbox[0] * sx, p.bbox[1] * sy, p.bbox[2] * sx, p.bbox[3] * sy] }));
+
+        let helmetOk = 0;
+        let topSpeed = 0;
+        for (const det of vehicles) {
+          const track = matchTrack(det, dt);
+          topSpeed = Math.max(topSpeed, track.speed);
+          let helmet = null;
+          if (det.class === "motorcycle") {
+            helmet = state.helmetMode === "custom" ? null : estimateHelmet(det, people);
+            if (helmet && helmet.ok) helmetOk++;
+            if (helmet && !helmet.ok && !track.warnedHelmet) {
+              track.warnedHelmet = true;
+              addLog("หมวกกันน็อค", `รถ #${track.id} ${helmet.label}`, "danger");
+            }
+          }
+          if (track.speed >= cfg.speedLimit && !track.warnedSpeed) {
+            track.warnedSpeed = true;
+            addLog("ความเร็ว", `รถ #${track.id} ${Math.round(track.speed)} km/h เกิน ${cfg.speedLimit} km/h`, "danger");
+          }
+          drawBox(det, track, helmet);
+        }
+
+        const now = performance.now();
+        for (const [id, track] of state.tracks) {
+          if (now - track.lastSeen > 1500) state.tracks.delete(id);
+        }
+
+        state.maxSpeed = Math.max(state.maxSpeed * 0.9, topSpeed);
+        $("speedNow").textContent = Math.round(topSpeed);
+        $("vehicleCount").textContent = vehicles.length;
+        $("helmetCount").textContent = helmetOk;
+        setStatus(vehicles.some((d) => {
+          const t = [...state.tracks.values()].find((track) => track.class === d.class);
+          return t && t.speed >= cfg.speedLimit;
+        }) ? "พบเหตุการณ์เตือน" : "กำลังตรวจจับ", vehicles.some((d) => {
+          const t = [...state.tracks.values()].find((track) => track.class === d.class);
+          return t && t.speed >= cfg.speedLimit;
+        }) ? "alert" : "live");
+      }
+      renderPhysics();
+      requestAnimationFrame(loop);
+    }
+
+    function bindRange(id, key, outId, fmt) {
+      const el = $(id);
+      const update = () => {
+        cfg[key] = Number(el.value);
+        $(outId).textContent = fmt(cfg[key]);
+        renderPhysics();
+      };
+      el.addEventListener("input", update);
+      update();
+    }
+
+    function renderPhysics() {
+      const speed = Number($("speedNow").textContent) || cfg.speedLimit;
+      const b = brakingDistance(speed);
+      $("physicsBox").textContent =
+`v = s / t
+speed = ${(speed / 3.6).toFixed(2)} m/s = ${Math.round(speed)} km/h
+stopping = reaction + braking
+reaction = ${b.reaction.toFixed(1)} m
+braking = ${b.brake.toFixed(1)} m
+total stop = ${b.total.toFixed(1)} m`;
+    }
+
+    canvas.addEventListener("click", (event) => {
+      if (!state.calibrating) return;
+      const rect = canvas.getBoundingClientRect();
+      state.calibPoints.push({ x: event.clientX - rect.left, y: event.clientY - rect.top });
+      if (state.calibPoints.length === 2) {
+        const [a, b] = state.calibPoints;
+        const px = Math.hypot(a.x - b.x, a.y - b.y);
+        cfg.meterPerPixel = cfg.calibMeters / Math.max(1, px);
+        $("meterPerPixel").value = Math.min(0.2, Math.max(0.005, cfg.meterPerPixel));
+        $("mppOut").textContent = cfg.meterPerPixel.toFixed(3);
+        state.calibrating = false;
+        $("hint").textContent = `คาลิเบรตแล้ว: ${cfg.calibMeters} เมตร / ${Math.round(px)} px`;
+      }
+    });
+
+    $("cameraBtn").addEventListener("click", startCamera);
+    $("videoFile").addEventListener("change", (e) => useVideoFile(e.target.files[0]));
+    $("calibrateBtn").addEventListener("click", () => {
+      state.calibrating = true;
+      state.calibPoints = [];
+      $("hint").textContent = "คลิกบนภาพ 2 จุดที่รู้ระยะจริง เช่น ความยาวเส้นถนนหรือระยะหลักเมตร";
+    });
+    $("resetTracksBtn").addEventListener("click", () => {
+      state.tracks.clear();
+      state.logs = [];
+      state.nextId = 1;
+      renderLog();
+      $("alertCount").textContent = "0";
+    });
+    $("exportBtn").addEventListener("click", () => {
+      const csv = "time,type,detail,level\n" + state.logs.map((l) => `"${l.time}","${l.type}","${l.text}","${l.level}"`).join("\n");
+      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "vehicle_speed_helmet_events.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+    $("helmetMode").addEventListener("click", async (event) => {
+      const btn = event.target.closest("button");
+      if (!btn) return;
+      document.querySelectorAll("#helmetMode button").forEach((b) => b.classList.remove("on"));
+      btn.classList.add("on");
+      state.helmetMode = btn.dataset.mode;
+      if (state.helmetMode === "custom") await detectHelmetsWithCustomModel();
+    });
+
+    bindRange("confidence", "confidence", "confOut", (v) => v.toFixed(2));
+    bindRange("speedLimit", "speedLimit", "limitOut", (v) => `${v} km/h`);
+    bindRange("calibMeters", "calibMeters", "calibOut", (v) => `${v.toFixed(1)} m`);
+    bindRange("meterPerPixel", "meterPerPixel", "mppOut", (v) => v.toFixed(3));
+    bindRange("roadAngle", "roadAngle", "angleOut", (v) => `${v}°`);
+    bindRange("friction", "friction", "frictionOut", (v) => v.toFixed(2));
+    bindRange("reactionTime", "reactionTime", "reactionOut", (v) => `${v.toFixed(1)} s`);
+    window.addEventListener("resize", resizeCanvas);
+    resizeCanvas();
+    renderLog();
+  </script>
+</body>
+</html>
